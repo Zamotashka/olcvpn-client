@@ -487,6 +487,77 @@ data class OpenFluxConfig(
     }
 }
 
+/**
+ * SNOLC (github.com/owenewans/snolc) modular userspace network engine for [EngineType.Snolc].
+ * Runs the snolc engine with carrier / protection modules, serving a local SOCKS5 inbound
+ * for the TUN bridge or chaining proxies over it.
+ */
+@Serializable
+data class SnolcConfig(
+    /** Remote server address:port or hostname:port */
+    @SerialName("server_endpoint")
+    val serverEndpoint: String = "",
+    /** Carrier transport module: tcp, ssh, etc. */
+    @SerialName("carrier")
+    val carrier: String = CARRIER_TCP,
+    /** Protection module: noise, tls, or none */
+    @SerialName("protection")
+    val protection: String = PROTECTION_NOISE,
+    /** Authentication token / PSK / password */
+    @SerialName("auth_token")
+    val authToken: String = "",
+    /** DNS server reached through the tunnel for domain lookups */
+    @SerialName("dns")
+    val dnsServer: String = DEFAULT_DNS,
+    /** Custom raw snolc.toml content (overrides generated config if provided) */
+    @SerialName("custom_toml")
+    val customToml: String = "",
+    /** Optional proxy share link chained on top of the SNOLC SOCKS5 */
+    @SerialName("proxy_link")
+    val proxyLink: String = "",
+    @SerialName("proxy_core")
+    val proxyCore: ProxyCore = ProxyCore.Auto,
+    /** Verbose engine logging */
+    @SerialName("debug")
+    val debug: Boolean = false,
+) {
+    fun hasProxy(): Boolean = proxyLink.isNotBlank()
+
+    fun resolvedProxyCore(profile: ProxyProfile?, globalCore: ProxyCore = ProxyCore.Auto): ProxyCore =
+        overTunnelProxyCore(proxyCore, profile, globalCore)
+
+    fun isComplete(): Boolean = customToml.isNotBlank() || serverEndpoint.isNotBlank()
+
+    fun isStorable(): Boolean = isComplete()
+
+    fun normalized(): SnolcConfig = copy(
+        serverEndpoint = serverEndpoint.trim(),
+        carrier = carrier.trim().ifBlank { CARRIER_TCP },
+        protection = protection.trim().ifBlank { PROTECTION_NOISE },
+        authToken = authToken.trim(),
+        dnsServer = dnsServer.trim(),
+        customToml = customToml.trim(),
+        proxyLink = proxyLink.trim(),
+    )
+
+    fun summary(): String = when {
+        customToml.isNotBlank() -> "Custom TOML"
+        else -> "$serverEndpoint ($carrier + $protection)"
+    }
+
+    companion object {
+        const val CARRIER_TCP = "tcp"
+        const val CARRIER_SSH = "ssh"
+        val CARRIERS = listOf(CARRIER_TCP, CARRIER_SSH)
+
+        const val PROTECTION_NOISE = "noise"
+        const val PROTECTION_TLS = "tls"
+        const val PROTECTION_NONE = "none"
+        val PROTECTIONS = listOf(PROTECTION_NOISE, PROTECTION_TLS, PROTECTION_NONE)
+        const val DEFAULT_DNS = "1.1.1.1:53"
+    }
+}
+
 /** One additional olcRTC room for the multi-room (aggregation) feature. */
 @Serializable
 data class ExtraRoom(
@@ -555,6 +626,9 @@ data class LocationConfig(
     /** OpenFlux transport for the [EngineType.OpenFlux] engine. Null for other engines. */
     @SerialName("openflux")
     val openFlux: OpenFluxConfig? = null,
+    /** SNOLC transport for the [EngineType.Snolc] engine. Null for other engines. */
+    @SerialName("snolc")
+    val snolc: SnolcConfig? = null,
     /** Per-location advanced core options, surfaced only when [core] is not Auto. Null = defaults. */
     val advanced: AdvancedCoreConfig? = null,
     /**
@@ -629,6 +703,7 @@ data class LocationConfig(
             vkturn = vkturn,
             masterDns = masterDns?.normalized(),
             openFlux = openFlux?.normalized(),
+            snolc = snolc?.normalized(),
             routingProfileId = routingProfileId.trim(),
             fakeDns = fakeDns,
         )
@@ -700,6 +775,8 @@ data class LocationConfig(
         EngineType.MasterDns -> masterDns?.isComplete() == true
         // OpenFlux needs the carrier's coordinates: the Yandex Docs URL, or the MAX token + callee id.
         EngineType.OpenFlux -> openFlux?.isComplete() == true
+        // SNOLC needs either a server endpoint or custom TOML configuration.
+        EngineType.Snolc -> snolc?.isComplete() == true
     }
 
     /**
@@ -1196,6 +1273,8 @@ data class LocationEntry(
     val masterDns: MasterDnsConfig? = null,
     @SerialName("openflux")
     val openFlux: OpenFluxConfig? = null,
+    @SerialName("snolc")
+    val snolc: SnolcConfig? = null,
     val advanced: AdvancedCoreConfig? = null,
     @SerialName("fake_dns")
     val fakeDns: FakeDnsSpec? = null,
@@ -1281,6 +1360,7 @@ data class LocationEntry(
                 vkturn = vkturn,
                 masterDns = masterDns,
                 openFlux = openFlux,
+                snolc = snolc,
                 advanced = advanced,
                 fakeDns = fakeDns,
                 routingProfileId = routingProfileId.orEmpty(),
@@ -1313,6 +1393,7 @@ data class LocationEntry(
             vkturn = config.vkturn,
             masterDns = config.masterDns,
             openFlux = config.openFlux,
+            snolc = config.snolc,
             advanced = config.advanced,
             fakeDns = config.fakeDns,
             routingProfileId = config.routingProfileId.ifBlank { null },
@@ -1353,6 +1434,7 @@ data class LocationEntry(
                 vkturn = config.vkturn,
                 masterDns = config.masterDns,
                 openFlux = config.openFlux,
+                snolc = config.snolc,
                 advanced = config.advanced,
                 fakeDns = config.fakeDns,
                 routingProfileId = config.routingProfileId.ifBlank { null },

@@ -116,6 +116,7 @@ internal class DesktopEngineController(
                 startVkTurn(config, listenHost, listenPort, socksUsername, socksPassword, deviceId)
             EngineType.MasterDns -> startMasterDns(config, listenHost, listenPort, socksUsername, socksPassword)
             EngineType.OpenFlux -> startOpenFlux(config, listenHost, listenPort, socksUsername, socksPassword)
+            EngineType.Snolc -> throw UnsupportedOperationException("SNOLC на ПК в разработке")
         }
         if (requestedTun && !tunHandledInCore) {
             log("Per-process split tunneling unavailable (core is ${activeProxyCore}); falling back to tun2socks for all apps")
@@ -172,6 +173,7 @@ internal class DesktopEngineController(
         // OpenFlux is a subprocess; in TUN mode a sing-box front owns the adapter in front of it.
         EngineType.OpenFlux -> openFlux.isRunning() &&
             if (openFluxProxyActive) proxyCoreRunning() else (!singBoxFrontActive || YpTunCore.sbRunning())
+        EngineType.Snolc -> false
     }
 
     /** True when the active MasterDNS engine also fronts a proxy core (proxy-over-MasterDNS). */

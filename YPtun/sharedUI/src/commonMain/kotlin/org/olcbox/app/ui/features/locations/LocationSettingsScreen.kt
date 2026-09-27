@@ -407,6 +407,14 @@ fun LocationSettingsScreen(
                 )
             }
 
+            if (config.engine == EngineType.Snolc) {
+                snolcSection(
+                    config = viewModel.editingSnolc,
+                    enabled = !isSaving,
+                    onChange = viewModel::updateSnolc
+                )
+            }
+
             if (config.engine == EngineType.Stealth || config.engine == EngineType.Chain) {
             item {
                 ConnectionTypePicker(
@@ -699,8 +707,9 @@ private fun EngineSelector(
             EngineType.Chain,
             EngineType.VkTurn,
             EngineType.MasterDns,
-            EngineType.OpenFlux
-        ).filterNot { ios && it == EngineType.OpenFlux }
+            EngineType.OpenFlux,
+            EngineType.Snolc
+        ).filterNot { (ios && it == EngineType.OpenFlux) || (ios && it == EngineType.Snolc) }
     }
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -1605,6 +1614,112 @@ private fun LazyListScope.openFluxSection(
     proxyOverTunnelSection(
         tunnel = "OpenFlux",
         exitName = "выходная нода OpenFlux",
+        proxyLink = config.proxyLink,
+        proxyCore = config.proxyCore,
+        enabled = enabled,
+        onLinkChange = { v -> onChange { it.copy(proxyLink = v) } },
+        onCoreChange = { v -> onChange { it.copy(proxyCore = v) } },
+    )
+}
+
+private fun LazyListScope.snolcSection(
+    config: SnolcConfig,
+    enabled: Boolean,
+    onChange: ((SnolcConfig) -> SnolcConfig) -> Unit,
+) {
+    item {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SectionTitle(
+                title = "SNOLC — модульный сетевой движок",
+                subtitle = "Userspace-движок на Rust (github.com/owenewans/snolc): adapter -> smoltcp -> yamux -> protection -> carrier"
+            )
+
+            Text(
+                text = "Carrier (транспорт)",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SnolcConfig.CARRIERS.forEach { carrier ->
+                    FilterChip(
+                        selected = config.carrier == carrier,
+                        onClick = { onChange { it.copy(carrier = carrier) } },
+                        enabled = enabled,
+                        label = { Text(carrier.uppercase()) }
+                    )
+                }
+            }
+
+            Text(
+                text = "Protection (защита)",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                SnolcConfig.PROTECTIONS.forEach { prot ->
+                    FilterChip(
+                        selected = config.protection == prot,
+                        onClick = { onChange { it.copy(protection = prot) } },
+                        enabled = enabled,
+                        label = { Text(prot.uppercase()) }
+                    )
+                }
+            }
+
+            VkTurnField(
+                value = config.serverEndpoint,
+                onValueChange = { v -> onChange { it.copy(serverEndpoint = v.trim()) } },
+                label = "Сервер SNOLC (адрес:порт)",
+                placeholder = "192.0.2.1:443 или domain.com:8443",
+                enabled = enabled
+            )
+
+            VkTurnField(
+                value = config.authToken,
+                onValueChange = { v -> onChange { it.copy(authToken = v.trim()) } },
+                label = "Ключ / токен авторизации (опционально)",
+                placeholder = "токен или PSK сессии",
+                enabled = enabled
+            )
+
+            VkTurnField(
+                value = config.dnsServer,
+                onValueChange = { v -> onChange { it.copy(dnsServer = v.trim()) } },
+                label = "DNS через туннель",
+                placeholder = "1.1.1.1:53; пусто — DNS устройства",
+                enabled = enabled,
+                keyboardType = KeyboardType.Uri
+            )
+
+            VkTurnSwitchRow("Подробный журнал ядра", config.debug, enabled) { v ->
+                onChange { it.copy(debug = v) }
+            }
+
+            VkTurnField(
+                value = config.customToml,
+                onValueChange = { v -> onChange { it.copy(customToml = v) } },
+                label = "Пользовательский snolc.toml (опционально)",
+                placeholder = "Вставьте полный snolc.toml для кастомной конфигурации",
+                singleLine = false,
+                enabled = enabled
+            )
+        }
+    }
+
+    proxyOverTunnelSection(
+        tunnel = "SNOLC",
+        exitName = "выходная нода SNOLC",
         proxyLink = config.proxyLink,
         proxyCore = config.proxyCore,
         enabled = enabled,
@@ -2962,6 +3077,7 @@ private fun engineLabel(engine: EngineType): String = when (engine) {
     EngineType.VkTurn -> "VK-TURN"
     EngineType.MasterDns -> "MasterDNS"
     EngineType.OpenFlux -> "OpenFlux"
+    EngineType.Snolc -> "SNOLC"
 }
 
 private fun engineSubtitle(engine: EngineType): String = when (engine) {
@@ -2971,6 +3087,7 @@ private fun engineSubtitle(engine: EngineType): String = when (engine) {
     EngineType.VkTurn -> "WireGuard over a VK TURN tunnel (free-turn-proxy)"
     EngineType.MasterDns -> "Туннель через DNS (MasterDnsVPN: несколько резолверов + ARQ)"
     EngineType.OpenFlux -> "TCP-туннель через Яндекс Документы (старый или новый редактор) или звонок MAX до своей выходной ноды"
+    EngineType.Snolc -> "Модульный сетевой движок (Rust): transport/protection/carrier поверх smoltcp"
 }
 
 private fun engineProtocolLabel(type: String): String = when (type) {

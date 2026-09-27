@@ -262,8 +262,8 @@ class IosTunnelSession(
         private const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 
         /** Engines whose SOCKS carries TCP only: hev tunnels UDP over TCP for them. */
-        private val TCP_ONLY_ENGINES = setOf(EngineType.Stealth, EngineType.MasterDns, EngineType.OpenFlux)
-        private val SLOW_ENGINES = setOf(EngineType.MasterDns, EngineType.OpenFlux)
+        private val TCP_ONLY_ENGINES = setOf(EngineType.Stealth, EngineType.MasterDns, EngineType.OpenFlux, EngineType.Snolc)
+        private val SLOW_ENGINES = setOf(EngineType.MasterDns, EngineType.OpenFlux, EngineType.Snolc)
 
         private val LAN_ROUTES = listOf(
             "10.0.0.0" to "255.0.0.0",

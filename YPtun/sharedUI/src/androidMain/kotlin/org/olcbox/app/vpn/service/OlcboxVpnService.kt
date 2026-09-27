@@ -207,6 +207,12 @@ class OlcboxVpnService : VpnService() {
 
     /** True when a proxy core fronts the OpenFlux tunnel (proxy-over-OpenFlux). */
     private var openFluxProxyActive: Boolean = false
+
+    /** SNOLC client subprocess for [EngineType.Snolc]; null when another engine is running. */
+    private var snolcProcess: Process? = null
+
+    /** True when a proxy core fronts the SNOLC tunnel (proxy-over-SNOLC). */
+    private var snolcProxyActive: Boolean = false
     /** Active Trust Tunnel client (SOCKS-only) for a [ProxyProfile.TYPE_TRUSTTUNNEL] proxy; null otherwise. */
     private var trustTunnelClient: TrustTunnelVpnClient? = null
     private var tun2socksThread: Thread? = null
@@ -977,6 +983,7 @@ class OlcboxVpnService : VpnService() {
             EngineType.VkTurn -> startVkTurnCore(location, upstream, requestedGeneration, setErrorOnFailure)
             EngineType.MasterDns -> startMasterDnsCore(location, upstream, requestedGeneration, setErrorOnFailure)
             EngineType.OpenFlux -> startOpenFluxCore(location, requestedGeneration, setErrorOnFailure)
+            EngineType.Snolc -> startSnolcCore(location, requestedGeneration, setErrorOnFailure)
         }
     }
 
@@ -1186,6 +1193,161 @@ class OlcboxVpnService : VpnService() {
             }
             false
         }
+    }
+
+    /**
+     * SNOLC (github.com/owenewans/snolc): modular userspace network engine (Rust).
+     * The client generates a client TOML configuration and spawns the native snolc core
+     * serving a local SOCKS5 inbound for the TUN bridge or proxy chaining.
+     */
+    private suspend fun startSnolcCore(
+        location: LocationConfig,
+        requestedGeneration: Long,
+        setErrorOnFailure: Boolean
+    ): Boolean {
+        val snolc = location.normalized().snolc
+        if (snolc == null || !snolc.isComplete()) {
+            if (setErrorOnFailure) {
+                setStatus(VpnStatus.Error("SNOLC not configured"))
+                updateNotification(ns.notifConnectionFailed)
+            }
+            return false
+        }
+        val proxy = snolc.proxyLink.takeIf { it.isNotBlank() }?.let { link ->
+            (ShareLinkParser.parse(link) ?: YptunInboundCodec.parse(link)?.let { it.proxy ?: it.proxy2 })
+                ?.takeIf { it.isComplete() }
+        }
+        if (snolc.hasProxy() && proxy == null) {
+            addLog("SNOLC: proxy link present but could not be parsed — exiting via SNOLC directly")
+        }
+        snolcProxyActive = proxy != null
+        val snolcPort = if (proxy != null) chainOlcrtcPort else socksListenPort
+        return try {
+            waitForSocksPortReleased(socksListenPort, SOCKS_RELEASE_QUICK_TIMEOUT_MS)
+            if (isLocalSocksPortOpen(socksListenPort)) {
+                throw IllegalStateException("SOCKS port $socksListenPort is still in use")
+            }
+            if (proxy != null) {
+                waitForSocksPortReleased(snolcPort, SOCKS_RELEASE_QUICK_TIMEOUT_MS)
+                if (isLocalSocksPortOpen(snolcPort)) {
+                    throw IllegalStateException("SNOLC internal port $snolcPort is still in use")
+                }
+            }
+            val exe = listOf(
+                java.io.File(applicationInfo.nativeLibraryDir, "libsnolc.so"),
+                java.io.File(filesDir, "snolc"),
+                java.io.File(applicationInfo.nativeLibraryDir, "libsnolc_ng.so")
+            ).firstOrNull { it.canExecute() } ?: java.io.File(applicationInfo.nativeLibraryDir, "libsnolc.so")
+
+            if (!exe.canExecute()) throw IllegalStateException("SNOLC core is missing from this build")
+
+            val configFile = java.io.File(filesDir, "snolc_client.toml")
+            val tomlContent = if (snolc.customToml.isNotBlank()) {
+                snolc.customToml
+            } else {
+                buildSnolcConfigToml(snolc, snolcPort)
+            }
+            configFile.writeText(tomlContent)
+
+            val listen = "$socksListenHost:$snolcPort"
+            val cmd = listOf(exe.absolutePath, "run", configFile.absolutePath)
+            addLog("Starting SNOLC (${snolc.summary()}) on $listen, dns=${snolc.dnsServer.ifBlank { "device" }}")
+
+            val process = ProcessBuilder(cmd).redirectErrorStream(true).apply {
+                if (snolc.authToken.isNotBlank()) {
+                    environment()["SNOLC_AUTH_TOKEN"] = snolc.authToken
+                }
+                environment()["SNOLC_SOCKS_USER"] = if (proxy != null) "" else socksUsername
+                environment()["SNOLC_SOCKS_PASS"] = if (proxy != null) "" else socksPassword
+            }.start()
+            snolcProcess = process
+            kotlin.concurrent.thread(name = "snolc-log", isDaemon = true) {
+                runCatching { process.inputStream.bufferedReader().forEachLine { addLog("snolc: $it") } }
+            }
+            coroutineContext.ensureActive()
+            if (requestedGeneration != generation) {
+                addLog("SNOLC start superseded")
+                return false
+            }
+            if (!awaitSocksPortOpen(snolcPort, MOBILE_READY_TIMEOUT_MS)) {
+                val exit = if (process.isAlive) "still starting" else "exited with ${process.exitValue()}"
+                throw IllegalStateException("SNOLC SOCKS port $snolcPort did not open ($exit)")
+            }
+            addLog("SNOLC ready on $listen")
+            if (proxy != null) {
+                startProxyOverTunnel("SNOLC", location.normalized(), proxy, snolcPort) { p, g ->
+                    snolc.resolvedProxyCore(p, g)
+                }
+                coroutineContext.ensureActive()
+                if (requestedGeneration != generation) {
+                    addLog("SNOLC proxy start superseded")
+                    return false
+                }
+                addLog("SNOLC proxy ready on $socksListenHost:$socksListenPort")
+            }
+            publishActiveSocks()
+            true
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                addLog("SNOLC start canceled")
+                stopMobileAndWait()
+            }
+            throw e
+        } catch (e: Exception) {
+            val staleRequest = requestedGeneration != generation
+            val message = e.message ?: "Transport failed"
+            addLog(if (staleRequest) "SNOLC start canceled: $message" else "SNOLC start failed: $message")
+            stopMobileAndWait()
+            if (!staleRequest && setErrorOnFailure) {
+                setStatus(VpnStatus.Error(message))
+                updateNotification(ns.notifConnectionFailed)
+            }
+            false
+        }
+    }
+
+    private fun buildSnolcConfigToml(snolc: SnolcConfig, listenPort: Int): String {
+        return """
+            wire_version = 1
+
+            [paths]
+            packages = "${filesDir.absolutePath}/snolc_packages"
+            state = "${filesDir.absolutePath}/snolc_state"
+
+            [engine]
+            max_sessions = 4
+            max_flows = 64
+            max_pending_sessions = 4
+            max_pending_opens = 16
+            max_managed_bytes = 33554432
+            max_commands = 64
+            max_events = 256
+            max_io_chunk = 16384
+            max_ingress_packets_per_tick = 32
+            connect_timeout_ms = 15000
+            handshake_timeout_ms = 15000
+            shutdown_timeout_ms = 5000
+
+            [stack]
+            ipv4 = true
+            ipv6 = true
+            mtu = 1280
+            tcp_socket_rx_bytes = 32768
+            tcp_socket_tx_bytes = 32768
+            udp_socket_rx_bytes = 131072
+            udp_socket_tx_bytes = 131072
+            udp_metadata_slots = 16
+            packet_queue_bytes = 262144
+            max_udp_payload_bytes = 65507
+
+            [inbound.socks5]
+            listen = "$socksListenHost:$listenPort"
+
+            [outbound]
+            endpoint = "${snolc.serverEndpoint}"
+            carrier = "${snolc.carrier}"
+            protection = "${snolc.protection}"
+        """.trimIndent()
     }
 
     /**
@@ -2473,6 +2635,7 @@ class OlcboxVpnService : VpnService() {
         // MasterDNS raises its own local SOCKS listener; with a proxy-over-MasterDNS a proxy core fronts it.
         EngineType.MasterDns -> masterDnsClient?.isRunning == true && (!masterDnsProxyActive || proxyCoreRunning())
         EngineType.OpenFlux -> openFluxProcess?.isAlive == true && (!openFluxProxyActive || proxyCoreRunning())
+        EngineType.Snolc -> snolcProcess?.isAlive == true && (!snolcProxyActive || proxyCoreRunning())
     }
 
     private suspend fun awaitSocksPortOpen(port: Int, timeoutMs: Long): Boolean {
@@ -2916,7 +3079,7 @@ class OlcboxVpnService : VpnService() {
             socks5:
               address: ${socksConnectHost()}
               port: $socksListenPort
-              udp: '${if (engineType == EngineType.Stealth || engineType == EngineType.MasterDns || engineType == EngineType.OpenFlux) "tcp" else "udp"}'
+              udp: '${if (engineType == EngineType.Stealth || engineType == EngineType.MasterDns || engineType == EngineType.OpenFlux || engineType == EngineType.Snolc) "tcp" else "udp"}'
               pipeline: false
               username: '$socksUsername'
               password: '$socksPassword'
@@ -2932,7 +3095,7 @@ class OlcboxVpnService : VpnService() {
               task-stack-size: 24576
               tcp-buffer-size: 4096
               max-session-count: 1200
-              connect-timeout: ${if (engineType == EngineType.MasterDns || engineType == EngineType.OpenFlux) 30000 else 10000}
+              connect-timeout: ${if (engineType == EngineType.MasterDns || engineType == EngineType.OpenFlux || engineType == EngineType.Snolc) 30000 else 10000}
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 60000
               log-file: stderr
@@ -3213,6 +3376,14 @@ class OlcboxVpnService : VpnService() {
         }
         openFluxProcess = null
         openFluxProxyActive = false
+        snolcProcess?.let { p ->
+            runCatching { p.destroy() }
+            if (runCatching { !p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }.getOrDefault(true)) {
+                runCatching { p.destroyForcibly() }
+            }
+        }
+        snolcProcess = null
+        snolcProxyActive = false
         runCatching { Awg.stop() }
         runCatching { trustTunnelClient?.stop() }
         runCatching { trustTunnelClient?.close() }

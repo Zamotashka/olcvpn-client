@@ -785,7 +785,7 @@ class DesktopVpnManager private constructor(
                     socksUsername = bridgeSettings.username,
                     socksPassword = bridgeSettings.password,
                     // Same split as Android's hev config: these SOCKS servers have no UDP ASSOCIATE.
-                    udpOverTcp = location.engine == EngineType.MasterDns || location.engine == EngineType.OpenFlux
+                    udpOverTcp = location.engine == EngineType.MasterDns || location.engine == EngineType.OpenFlux || location.engine == EngineType.Snolc
                 )
                 DesktopMode.WindowsTun -> if (engineController.tunHandledInCore) {
                     // sing-box raised the wintun adapter itself (per-process split tunneling);
