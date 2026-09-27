@@ -32,6 +32,7 @@ import org.olcbox.app.data.importer.AmneziaWgParser
 import org.olcbox.app.data.importer.FreeturnUriParser
 import org.olcbox.app.data.importer.QwdttUriParser
 import org.olcbox.app.data.importer.ShareLinkParser
+import org.olcbox.app.data.importer.SnolcUriParser
 import org.olcbox.app.data.importer.SubscriptionDecoder
 import org.olcbox.app.data.identity.DeviceIdentityProvider
 import org.olcbox.app.data.identity.DeviceInfo
@@ -1188,7 +1189,15 @@ class LocationsRepositoryImpl(
         // qWDTT quick links (qwdtt://config?…): VK-TURN locations on the WDTT core.
         parseQwdttText(linkText, subscriptionUrl)?.let { linkBundles += it }
 
+        // SNOLC share links (snolc://): SNOLC network engine locations.
+        parseSnolcText(linkText, subscriptionUrl)?.let { linkBundles += it }
+
         if (linkBundles.isEmpty()) {
+            // Raw SNOLC TOML config
+            parseSnolcTomlText(text, subscriptionUrl)?.let {
+                return ParsedImport(it, ImportMode.Additive)
+            }
+
             // AmneziaWG .conf (whole wg-quick INI with obf knobs) → a Standard location whose proxy is
             // the AmneziaWG transport. Checked before the proxy parser (which splits into per-line links
             // and would not see the multi-line config).
@@ -1866,6 +1875,53 @@ class LocationsRepositoryImpl(
             .toList()
         if (entries.isEmpty()) return null
         return LocationBundleV4(activeLocationId = entries.first().storageId, locations = entries)
+    }
+
+    /**
+     * Parses every [SnolcUriParser.SCHEME] share link into a [EngineType.Snolc] location.
+     */
+    private fun parseSnolcText(
+        text: String,
+        subscriptionUrl: String? = null
+    ): LocationBundleV4? {
+        val usedStorageIds = mutableSetOf<String>()
+        val entries = text.trim().lineSequence()
+            .map { it.trim() }
+            .filter { it.startsWith(SnolcUriParser.SCHEME, ignoreCase = true) }
+            .mapNotNull { SnolcUriParser.parse(it) }
+            .map { link ->
+                val name = link.name.ifBlank { "SNOLC ${link.config.serverEndpoint}" }
+                val location = LocationConfig(
+                    name = name,
+                    engine = EngineType.Snolc,
+                    snolc = link.config,
+                ).normalized()
+                val base = link.config.serverEndpoint.ifBlank { "custom" }
+                    .lowercase().map { if (it.isLetterOrDigit()) it else '_' }.joinToString("")
+                val storageId = uniqueStorageId("imported_snolc_$base", usedStorageIds)
+                LocationEntry.from(storageId = storageId, location = location, subscriptionUrl = subscriptionUrl)
+            }
+            .toList()
+        if (entries.isEmpty()) return null
+        return LocationBundleV4(activeLocationId = entries.first().storageId, locations = entries)
+    }
+
+    /** Parses a raw SNOLC TOML configuration into a [EngineType.Snolc] location. */
+    private fun parseSnolcTomlText(text: String, subscriptionUrl: String? = null): LocationBundleV4? {
+        val trimmed = text.trim()
+        if (!SnolcUriParser.looksLikeSnolcToml(trimmed)) return null
+        val location = LocationConfig(
+            name = "SNOLC Custom",
+            engine = EngineType.Snolc,
+            snolc = org.olcbox.app.data.model.SnolcConfig(customToml = trimmed),
+        ).normalized()
+        val storageId = uniqueStorageId("imported_snolc_toml", mutableSetOf())
+        val entry = LocationEntry.from(
+            storageId = storageId,
+            location = location,
+            subscriptionUrl = subscriptionUrl,
+        )
+        return LocationBundleV4(activeLocationId = entry.storageId, locations = listOf(entry))
     }
 
     /** Parses a whole AmneziaWG wg-quick .conf into a [EngineType.Standard] location. */

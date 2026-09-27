@@ -17,6 +17,9 @@ object ConfigShareService {
             if (vk?.usesWdtt() == true) return QwdttUriParser.compose(normalized.name, vk)
             return vk?.uri.orEmpty()
         }
+        if (normalized.engine == EngineType.Snolc) {
+            normalized.snolc?.let { return org.olcbox.app.data.importer.SnolcUriParser.compose(normalized.name, it) }
+        }
         // Standard/Chain run a sing-box/Xray proxy — share the matching proxy link (vless/…/awg),
         // NOT an olcrtc:// link (which only makes sense for the Stealth olcRTC engine).
         if (normalized.engine == EngineType.Standard || normalized.engine == EngineType.Chain) {

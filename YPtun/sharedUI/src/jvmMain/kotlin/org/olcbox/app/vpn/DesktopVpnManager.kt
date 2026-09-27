@@ -223,6 +223,13 @@ class DesktopVpnManager private constructor(
             // Obfuscated transports whose real endpoint is blocked/hidden: probe through the live
             // tunnel when connected; otherwise the best standalone probe available.
             config.engine == EngineType.VkTurn -> tunnelPing()
+            config.engine == EngineType.Snolc ->
+                if (isConnected.value) tunnelPing()
+                else {
+                    val ep = config.snolc?.serverEndpoint?.trim().orEmpty()
+                    val hp = org.olcbox.app.data.importer.UriCodec.splitHostPort(ep)
+                    tcpPing(hp?.first, hp?.second)
+                }
             proxyType == ProxyProfile.TYPE_AMNEZIAWG ->
                 if (isConnected.value) tunnelPing()
                 else awgProbePing(profile?.awgConfig.orEmpty())

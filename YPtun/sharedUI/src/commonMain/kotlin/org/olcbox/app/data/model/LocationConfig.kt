@@ -545,6 +545,51 @@ data class SnolcConfig(
         else -> "$serverEndpoint ($carrier + $protection)"
     }
 
+    fun buildToml(baseDir: String, listenHost: String, listenPort: Int): String {
+        val dir = baseDir.replace('\\', '/')
+        return """
+            wire_version = 1
+
+            [paths]
+            packages = "$dir/snolc_packages"
+            state = "$dir/snolc_state"
+
+            [engine]
+            max_sessions = 4
+            max_flows = 64
+            max_pending_sessions = 4
+            max_pending_opens = 16
+            max_managed_bytes = 33554432
+            max_commands = 64
+            max_events = 256
+            max_io_chunk = 16384
+            max_ingress_packets_per_tick = 32
+            connect_timeout_ms = 15000
+            handshake_timeout_ms = 15000
+            shutdown_timeout_ms = 5000
+
+            [stack]
+            ipv4 = true
+            ipv6 = true
+            mtu = 1280
+            tcp_socket_rx_bytes = 32768
+            tcp_socket_tx_bytes = 32768
+            udp_socket_rx_bytes = 131072
+            udp_socket_tx_bytes = 131072
+            udp_metadata_slots = 16
+            packet_queue_bytes = 262144
+            max_udp_payload_bytes = 65507
+
+            [inbound.socks5]
+            listen = "$listenHost:$listenPort"
+
+            [outbound]
+            endpoint = "$serverEndpoint"
+            carrier = "$carrier"
+            protection = "$protection"
+        """.trimIndent()
+    }
+
     companion object {
         const val CARRIER_TCP = "tcp"
         const val CARRIER_SSH = "ssh"

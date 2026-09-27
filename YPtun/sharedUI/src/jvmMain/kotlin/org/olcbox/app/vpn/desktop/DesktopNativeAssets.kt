@@ -140,6 +140,22 @@ internal object DesktopNativeAssets {
         return resolveBinary(fileName = fileName, resourceName = "native/$fileName", candidates = emptyList())
     }
 
+    /** SNOLC client (owenewans/snolc). */
+    fun resolveSnolcBinary(): Path {
+        val fileName = when (DesktopPaths.os) {
+            DesktopOs.Linux -> "snolc-linux-${desktopArch()}"
+            DesktopOs.Windows -> "snolc-windows-${desktopArch()}.exe"
+            else -> error("SNOLC is not supported on ${DesktopPaths.os}")
+        }
+        val explicitBinary = System.getenv("SNOLC_BINARY")?.takeIf { it.isNotBlank() }?.let { Path(it) }
+        val exeName = if (DesktopPaths.os == DesktopOs.Windows) "snolc.exe" else "snolc"
+        val candidates = listOfNotNull(explicitBinary) + desktopNativeResourceCandidates(fileName) + listOf(
+            DesktopPaths.appDataDir().resolve("bin").resolve(exeName),
+            Path(exeName)
+        )
+        return resolveBinary(fileName = fileName, resourceName = "native/$fileName", candidates = candidates)
+    }
+
     private fun trustTunnelFileName(kind: String): String {
         return when (DesktopPaths.os) {
             DesktopOs.Linux -> "trusttunnel-$kind-linux-${desktopArch()}"
